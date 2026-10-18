@@ -1,0 +1,8 @@
+# Block direct web access to sensitive files
+<Files "config.php">
+  Require all denied
+</Files>
+<FilesMatch "\.(sql|ps1|log|md|gitignore)$">
+  Require all denied
+</FilesMatch>
+Options -Indexes
