@@ -20,6 +20,8 @@ $notes = $appt['notes'] ?? '';
     </select>
   </div>
 
+  <div id="map" class="map-box" style="height: 240px; border-radius: 6px; margin-bottom: 1rem;"></div>
+
   <div class="field">
     <label for="service_id">Medical Service:</label>
     <select name="service_id" id="service_id" required>
@@ -42,6 +44,9 @@ $notes = $appt['notes'] ?? '';
     </div>
   </div>
 
+  <!-- Live Weather Forecast Preview -->
+  <div id="wx" class="wx" hidden></div>
+
   <div class="field">
     <label for="notes">Notes / Reason for visit (optional):</label>
     <textarea name="notes" id="notes" rows="2" maxlength="255"><?= e($notes) ?></textarea>
@@ -52,3 +57,67 @@ $notes = $appt['notes'] ?? '';
     <a href="index.php" class="btn secondary">Cancel</a>
   </div>
 </form>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {
+  var CENTERS = <?= json_encode($centers) ?>;
+  var sel = document.getElementById('center_id');
+  if (!CENTERS.length) return;
+
+  var first = CENTERS[0];
+  var map = L.map('map').setView([first.lat, first.lng], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  var markers = {};
+  CENTERS.forEach(function (c) {
+    var m = L.marker([c.lat, c.lng]).addTo(map).bindPopup('<b>' + c.name + '</b><br>' + c.address);
+    markers[c.id] = m;
+  });
+
+  function focus() {
+    var c = CENTERS.filter(function (x) { return x.id == sel.value; })[0];
+    if (c) { map.setView([c.lat, c.lng], 15); markers[c.id].openPopup(); }
+  }
+  sel.addEventListener('change', focus);
+  focus();
+
+  // OpenWeatherMap forecast for the chosen center/date/time (same-domain request).
+  var wx = document.getElementById('wx'), f = document.forms[0];
+  function loadWx() {
+    var qs = 'center_id=' + encodeURIComponent(sel.value) + '&date=' + encodeURIComponent(f.appt_date.value) + '&time=' + encodeURIComponent(f.appt_time.value);
+    fetch('<?= e(cfg('base_url')) ?>/api/weather.php?' + qs)
+      .then(function (r) { return r.json(); })
+      .then(function (w) {
+        wx.hidden = false;
+        wx.className = 'wx';
+        wx.textContent = '';
+        if (!w.available) {
+          wx.textContent = w.message || '';
+          return;
+        }
+        var img = document.createElement('img');
+        img.alt = '';
+        img.src = 'https://openweathermap.org/img/wn/' + w.icon + '@2x.png';
+        var t = document.createElement('div');
+        var b = document.createElement('b');
+        b.textContent = w.temp + '\u00B0C';
+        t.appendChild(b);
+        t.appendChild(document.createTextNode(' ' + w.desc + ' \u00B7 ' + w.pop + '% rain chance'));
+        if (w.advisory) {
+          wx.className = 'wx warn';
+          t.appendChild(document.createElement('br'));
+          t.appendChild(document.createTextNode(w.advisory));
+        }
+        wx.appendChild(img);
+        wx.appendChild(t);
+      })
+      .catch(function () { wx.hidden = true; });
+  }
+  [sel, f.appt_date, f.appt_time].forEach(function (el) { el.addEventListener('change', loadWx); });
+  loadWx();
+})();
+</script>
