@@ -15,9 +15,51 @@ try {
 $sampleCenter = $centers[0]['name'] ?? 'City Health Office - Iligan';
 page_header('HealthQueue Iligan');
 
-$loggedIn = (bool)current_user();
-$ctaHref  = $loggedIn ? 'appointments/create.php' : google_login_url();
-$ctaText  = 'Book an appointment';
+$user = current_user();
+$loggedIn = (bool)$user;
+$role = $user['role'] ?? null;
+$queueTicket = null;
+$publicCenterIndex = 0;
+$publicCenter = $centers[0] ?? null;
+if (!$user && $centers) {
+    $requestedCenter = (int)($_GET['center_id'] ?? $centers[0]['id']);
+    foreach ($centers as $index => $centerOption) {
+        if ((int)$centerOption['id'] === $requestedCenter) {
+            $publicCenterIndex = $index;
+            $publicCenter = $centerOption;
+            break;
+        }
+    }
+}
+if (!$dbDown && $user && $user['role'] === 'patient') {
+    $ticket = db()->prepare(
+        'SELECT a.queue_no, a.appt_date, a.status, c.name AS center_name
+         FROM appointments a
+         JOIN centers c ON c.id = a.center_id
+         WHERE a.patient_id = ? AND a.status IN ("pending", "waiting", "in_consultation")
+         ORDER BY a.appt_date ASC, a.appt_time ASC, a.queue_no ASC
+         LIMIT 1'
+    );
+    $ticket->execute([$user['id']]);
+    $queueTicket = $ticket->fetch() ?: null;
+} elseif (!$dbDown && !empty($publicCenter['id'])) {
+    $ticket = db()->prepare(
+        'SELECT a.queue_no, a.appt_date, a.status, c.name AS center_name
+         FROM appointments a
+         JOIN centers c ON c.id = a.center_id
+         WHERE a.center_id = ? AND a.appt_date = CURDATE()
+           AND a.status IN ("in_consultation", "waiting", "pending")
+         ORDER BY FIELD(a.status, "in_consultation", "waiting", "pending"), a.queue_no ASC
+         LIMIT 1'
+    );
+    $ticket->execute([(int)$publicCenter['id']]);
+    $queueTicket = $ticket->fetch() ?: null;
+}
+$queueTicketIsPublic = !$user && (bool)$queueTicket;
+$publicPrevious = $centers ? $centers[($publicCenterIndex - 1 + count($centers)) % count($centers)] : null;
+$publicNext = $centers ? $centers[($publicCenterIndex + 1) % count($centers)] : null;
+$ctaHref  = !$loggedIn ? google_login_url() : ($role === 'patient' ? 'appointments/create.php' : ($role === 'worker' ? 'queue.php' : 'admin/dashboard.php'));
+$ctaText  = !$loggedIn || $role === 'patient' ? 'Book an appointment' : ($role === 'worker' ? 'Open worker queue' : 'Open admin dashboard');
 ?>
 <div class="hq">
 
@@ -37,16 +79,26 @@ $ctaText  = 'Book an appointment';
       <?php endif; ?>
     </div>
 
-    <div class="hq-ticket" aria-label="Sample queue ticket">
-      <div class="label">Sample queue ticket</div>
-      <div class="center"><?= e($sampleCenter) ?></div>
-      <div class="num">#07</div>
-      <div class="row">
-        <span><?= date('D, M j') ?></span>
-        <span class="hq-pill">Waiting</span>
+    <div class="hq-ticket-area">
+      <?php if (!$user && $publicCenter): ?>
+      <div class="public-queue-nav">
+        <a class="queue-arrow" href="?center_id=<?= e($publicPrevious['id']) ?>" aria-label="Previous health center">&lsaquo;</a>
+        <span><?= e($publicCenterIndex + 1) ?> / <?= e(count($centers)) ?></span>
+        <a class="queue-arrow" href="?center_id=<?= e($publicNext['id']) ?>" aria-label="Next health center">&rsaquo;</a>
+      </div>
+      <?php endif; ?>
+      <div class="hq-ticket" aria-label="<?= $queueTicket ? 'Your queue ticket' : 'Public queue status' ?>">
+        <div class="label"><?= $user && $queueTicket ? 'Your current queue' : ($queueTicketIsPublic ? 'Current public queue' : 'No active queue') ?></div>
+        <div class="center"><?= e($queueTicket['center_name'] ?? ($publicCenter['name'] ?? $sampleCenter)) ?></div>
+        <div class="num"><?= $queueTicket ? '#' . e($queueTicket['queue_no']) : '—' ?></div>
+        <div class="row">
+          <span><?= $queueTicket ? date('D, M j', strtotime($queueTicket['appt_date'])) : date('D, M j') ?></span>
+          <span class="hq-pill"><?= $queueTicket ? e(str_replace('_', ' ', $queueTicket['status'])) : 'No patients queued' ?></span>
+        </div>
       </div>
     </div>
   </section>
+  <?php if (!$user && $publicCenter): ?><script>window.setTimeout(function () { window.location.reload(); }, 30000);</script><?php endif; ?>
 
   <section class="hq-section">
     <h2>How it works</h2>
