@@ -48,3 +48,20 @@ function names_for($centerId, $serviceId)
 
     return [$centerName, $serviceName];
 }
+
+function appointment_slot_taken($centerId, $serviceId, $date, $time, $excludeId = 0)
+{
+    $sql = 'SELECT id FROM appointments
+            WHERE center_id=? AND service_id=? AND appt_date=?
+              AND status <> "cancelled"
+              AND ABS(TIME_TO_SEC(appt_time) - TIME_TO_SEC(?)) < 3600';
+    $params = [$centerId, $serviceId, $date, $time];
+    if ($excludeId) {
+        $sql .= ' AND id <> ?';
+        $params[] = $excludeId;
+    }
+    $sql .= ' LIMIT 1';
+    $st = db()->prepare($sql);
+    $st->execute($params);
+    return (bool)$st->fetchColumn();
+}

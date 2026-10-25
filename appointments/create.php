@@ -5,8 +5,10 @@ require_once __DIR__ . '/../includes/appointments.php';
 require_once __DIR__ . '/../includes/google.php';
 require_once __DIR__ . '/../includes/mailer.php';
 require_once __DIR__ . '/../includes/weather.php';
+require_once __DIR__ . '/../includes/rules.php';
 
-$u = require_login();
+$u = require_patient();
+guard_new_booking();
 $pdo = db();
 
 $centers = $pdo->query('SELECT * FROM centers ORDER BY name')->fetchAll();
@@ -19,12 +21,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $appt = $_POST;
     } else {
         $pdo->beginTransaction();
+        $lock = $pdo->prepare('SELECT id FROM centers WHERE id = ? FOR UPDATE');
+        $lock->execute([$data['center_id']]);
         $limit = (int)cfg('daily_limit_per_center', 40);
         $st = $pdo->prepare('SELECT COUNT(*) FROM appointments WHERE center_id=? AND appt_date=? AND status != "cancelled"');
         $st->execute([$data['center_id'], $data['appt_date']]);
         if ((int)$st->fetchColumn() >= $limit) {
             $pdo->rollBack();
             flash('This center has reached its appointment capacity for the chosen date.', 'err');
+            $appt = $_POST;
+        } elseif (appointment_slot_taken($data['center_id'], $data['service_id'], $data['appt_date'], $data['appt_time'])) {
+            $pdo->rollBack();
+            flash('That department already has a queue within one hour of this time. Choose a time at least one hour apart.', 'err');
             $appt = $_POST;
         } else {
             $st = $pdo->prepare('SELECT id FROM appointments WHERE patient_id=? AND appt_date=? AND appt_time=? AND status != "cancelled"');
@@ -52,8 +60,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $advisory = weather_advisory(weather_for($data['center_id'], $data['appt_date'], $data['appt_time']));
                 $mailed = appointment_email('created', $u, $row, $cn, $sn, $advisory);
-                $extra = ($evt ? ' Added to Google Calendar.' : ' (Calendar not synced.)') . ($mailed ? ' Email sent.' : '');
-                flash("Booked! Your queue number is #{$qno}." . $extra . ($advisory ? ' Weather: ' . $advisory : ''), $advisory ? 'warn' : 'ok');
+                if ($evt) {
+                    $extra = ' Added to Google Calendar.';
+                } else {
+                    $extra = ' Calendar sync failed: ' . (google_calendar_error() ?: 'Unknown Google Calendar error.');
+                }
+                $extra .= $mailed ? ' Email sent.' : '';
+                $flashType = (!$evt || $advisory) ? 'warn' : 'ok';
+                flash("Booked! Your queue number is #{$qno}." . $extra . ($advisory ? ' Weather: ' . $advisory : ''), $flashType);
                 redirect('index.php');
             }
         }

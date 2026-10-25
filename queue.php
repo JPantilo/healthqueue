@@ -50,23 +50,64 @@ if ($center && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $back = 'queue.php?center_id=' . $centerId;
 
     if ($action === 'accept') {
+        $lookup = $pdo->prepare('SELECT appt_date FROM appointments WHERE id=? AND center_id=? AND status="pending"' . $svcPlain);
+        $lookup->execute([$apptId, $centerId]);
+        $acceptedDate = $lookup->fetchColumn();
         $n = $pdo->prepare('UPDATE appointments SET status="waiting" WHERE id=? AND center_id=? AND status="pending"' . $svcPlain);
         $n->execute([$apptId, $centerId]);
-        flash($n->rowCount() ? 'Booking accepted. The patient is now in the queue.' : 'That booking can no longer be accepted.', $n->rowCount() ? 'ok' : 'err');
+        if ($n->rowCount()) {
+            $dateLabel = $acceptedDate === $today ? "today's queue" : date('F j, Y', strtotime($acceptedDate));
+            flash("Booking accepted. The patient is in {$dateLabel}.", 'ok');
+        } else {
+            flash('That booking can no longer be accepted.', 'err');
+        }
         redirect($back);
     }
 
     if ($action === 'call' || $action === 'done' || $action === 'no_show') {
         $map = [
-            'call'    => ['waiting', 'in_consultation'],
-            'done'    => ['in_consultation', 'done'],
-            'no_show' => ['waiting', 'no_show'],
+            'call' => ['waiting', 'in_consultation'],
+            'done' => ['in_consultation', 'done'],
         ];
-        [$from, $to] = $map[$action];
-        $n = $pdo->prepare('UPDATE appointments SET status=? WHERE id=? AND center_id=? AND status=?' . $svcPlain);
-        $n->execute([$to, $apptId, $centerId, $from]);
+        if ($action === 'no_show') {
+            $n = $pdo->prepare('UPDATE appointments SET status="no_show" WHERE id=? AND center_id=? AND status IN ("pending","waiting")' . $svcPlain);
+            $n->execute([$apptId, $centerId]);
+        } else {
+            [$from, $to] = $map[$action];
+            $n = $pdo->prepare('UPDATE appointments SET status=? WHERE id=? AND center_id=? AND status=?' . $svcPlain);
+            $n->execute([$to, $apptId, $centerId, $from]);
+        }
+
+        if ($n->rowCount() && $action === 'done') {
+            $nextQuery = 'SELECT a.*, u.name, u.email, s.name AS service_name, c.name AS center_name
+                          FROM appointments a
+                          JOIN users u ON a.patient_id=u.id
+                          JOIN services s ON a.service_id=s.id
+                          JOIN centers c ON a.center_id=c.id
+                          WHERE a.center_id=? AND a.appt_date=? AND a.status="waiting"' . $svcA . '
+                          ORDER BY a.queue_no ASC LIMIT 1';
+            $nextSt = $pdo->prepare($nextQuery);
+            $nextSt->execute([$centerId, $today]);
+            $next = $nextSt->fetch();
+            if ($next) {
+                $promote = $pdo->prepare('UPDATE appointments SET status="in_consultation" WHERE id=? AND status="waiting"');
+                $promote->execute([$next['id']]);
+                if ($promote->rowCount()) {
+                    appointment_email('next', $next, $next, $next['center_name'], $next['service_name']);
+                }
+            }
+        }
 
         if ($n->rowCount() && $action === 'call') {
+            $called = $pdo->prepare('SELECT u.name, u.email, u.mobile, u.mobile_network
+                                     FROM appointments a
+                                     JOIN users u ON a.patient_id=u.id
+                                     WHERE a.id=?');
+            $called->execute([$apptId]);
+            $calledPatient = $called->fetch();
+            if ($calledPatient) {
+                $_SESSION['queue_patient_modal'] = $calledPatient;
+            }
             // Tell the next waiting patient that they are up next.
             $nx = $pdo->prepare('SELECT a.*, u.name, u.email, s.name AS service_name, c.name AS center_name
                                  FROM appointments a
@@ -81,7 +122,24 @@ if ($center && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 appointment_email('next', $next, $next, $next['center_name'], $next['service_name']);
             }
         }
-        flash($n->rowCount() ? 'Queue updated.' : 'That patient is no longer in that step.', $n->rowCount() ? 'ok' : 'err');
+        if ($n->rowCount() && $action === 'no_show') {
+            $missed = $pdo->prepare('SELECT a.*, u.name, u.email, s.name AS service_name, c.name AS center_name
+                                    FROM appointments a
+                                    JOIN users u ON a.patient_id=u.id
+                                    JOIN services s ON a.service_id=s.id
+                                    JOIN centers c ON a.center_id=c.id
+                                    WHERE a.id=?');
+            $missed->execute([$apptId]);
+            $patient = $missed->fetch();
+            if ($patient) {
+                appointment_email('no_show', $patient, $patient, $patient['center_name'], $patient['service_name']);
+            }
+        }
+        $message = 'Queue updated.';
+        if ($action === 'done' && !empty($next) && !empty($promote) && $promote->rowCount()) {
+            $message = 'Patient marked done. The next patient is now in consultation.';
+        }
+        flash($n->rowCount() ? $message : 'That patient is no longer in that step.', $n->rowCount() ? 'ok' : 'err');
         redirect($back);
     }
 
@@ -136,7 +194,8 @@ if ($center && $_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ---------- Data for the page ----------
-$pending = $waitingNow = $inConsult = $doneToday = [];
+$pending = $pendingToday = $pendingTomorrow = $pendingLater = [];
+$waitingNow = $inConsult = $doneToday = $upcomingActive = [];
 if ($center) {
     $p = $pdo->prepare('SELECT a.*, u.name AS patient_name, s.name AS service_name
                         FROM appointments a
@@ -146,12 +205,23 @@ if ($center) {
                         ORDER BY a.appt_date, a.queue_no');
     $p->execute([$centerId, $today]);
     $pending = $p->fetchAll();
+    $tomorrow = date('Y-m-d', strtotime('+1 day'));
+    foreach ($pending as $booking) {
+        if ($booking['appt_date'] === $today) {
+            $pendingToday[] = $booking;
+        } elseif ($booking['appt_date'] === $tomorrow) {
+            $pendingTomorrow[] = $booking;
+        } else {
+            $pendingLater[] = $booking;
+        }
+    }
 
     $t = $pdo->prepare('SELECT a.*, u.name AS patient_name, s.name AS service_name
                         FROM appointments a
                         JOIN users u ON a.patient_id=u.id
                         JOIN services s ON a.service_id=s.id
-                        WHERE a.center_id=? AND a.appt_date=? AND a.status IN ("waiting","in_consultation","done")' . $svcA . '
+                        WHERE a.center_id=? AND a.appt_date=?
+                          AND a.status IN ("waiting","in_consultation","done")' . $svcA . '
                         ORDER BY a.queue_no');
     $t->execute([$centerId, $today]);
     foreach ($t->fetchAll() as $r) {
@@ -159,7 +229,20 @@ if ($center) {
         elseif ($r['status'] === 'in_consultation') { $inConsult[] = $r; }
         else { $doneToday[] = $r; }
     }
+
+    $u = $pdo->prepare('SELECT a.*, u.name AS patient_name, s.name AS service_name
+                        FROM appointments a
+                        JOIN users u ON a.patient_id=u.id
+                        JOIN services s ON a.service_id=s.id
+                        WHERE a.center_id=? AND a.appt_date>? 
+                          AND a.status IN ("waiting","in_consultation")' . $svcA . '
+                        ORDER BY a.appt_date, a.queue_no');
+    $u->execute([$centerId, $today]);
+    $upcomingActive = $u->fetchAll();
 }
+
+$calledPatientModal = $_SESSION['queue_patient_modal'] ?? null;
+unset($_SESSION['queue_patient_modal']);
 
 function rs_form(array $a): string {
     ob_start(); ?>
@@ -189,17 +272,20 @@ page_header('Queue');
   <div class="qb-top">
     <div>
       <h1><?= e($center['name']) ?></h1>
-      <p><?= date('l, F j, Y') ?><?php if (!$isAdmin): ?> &middot; <?= $svcNames ? e(implode(', ', $svcNames)) : 'No department assigned' ?><?php endif; ?></p>
+      <p><?= date('l, F j, Y') ?> <span class="live-indicator"><i></i> Live board</span><?php if (!$isAdmin): ?> &middot; <?= $svcNames ? e(implode(', ', $svcNames)) : 'No department assigned' ?><?php endif; ?></p>
     </div>
-    <?php if ($isAdmin && count($centers) > 1): ?>
-      <form method="GET" class="qb-pick">
-        <select name="center_id" onchange="this.form.submit()" aria-label="Clinic">
-          <?php foreach ($centers as $c): ?>
-            <option value="<?= e($c['id']) ?>" <?= (int)$c['id'] === $centerId ? 'selected' : '' ?>><?= e($c['name']) ?></option>
-          <?php endforeach; ?>
-        </select>
-      </form>
-    <?php endif; ?>
+    <div class="qb-tools">
+      <?php if ($isAdmin && count($centers) > 1): ?>
+        <form method="GET" class="qb-pick">
+          <select name="center_id" onchange="this.form.submit()" aria-label="Clinic">
+            <?php foreach ($centers as $c): ?>
+              <option value="<?= e($c['id']) ?>" <?= (int)$c['id'] === $centerId ? 'selected' : '' ?>><?= e($c['name']) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </form>
+      <?php endif; ?>
+      <button type="button" class="btn secondary sm" onclick="window.location.reload()">Refresh queue</button>
+    </div>
   </div>
 
   <?php if (!$isAdmin && !$svcIds): ?>
@@ -207,7 +293,7 @@ page_header('Queue');
   <?php endif; ?>
 
   <div class="qb-stats">
-    <div class="qb-stat"><strong><?= count($pending) ?></strong><span>Awaiting approval</span></div>
+    <div class="qb-stat"><strong><?= count($pendingToday) ?></strong><span>Today's requests</span></div>
     <div class="qb-stat"><strong><?= count($waitingNow) ?></strong><span>Waiting today</span></div>
     <div class="qb-stat"><strong><?= count($inConsult) ?></strong><span>In consultation</span></div>
     <div class="qb-stat"><strong><?= count($doneToday) ?></strong><span>Done today</span></div>
@@ -219,8 +305,19 @@ page_header('Queue');
       <?php if (!$pending): ?>
         <div class="qb-empty">No bookings are waiting for approval.</div>
       <?php else: ?>
+        <?php
+        $requestGroups = [
+            ["Today's requests", $pendingToday],
+            ['Tomorrow\'s requests', $pendingTomorrow],
+            ['Later requests', $pendingLater],
+        ];
+        foreach ($requestGroups as $group):
+            [$groupTitle, $groupBookings] = $group;
+            if (!$groupBookings) { continue; }
+        ?>
+        <h3 class="qb-group-title"><?= e($groupTitle) ?></h3>
         <div class="qb-list">
-          <?php foreach ($pending as $a): ?>
+          <?php foreach ($groupBookings as $a): ?>
             <div class="qb-item">
               <div class="qb-num">#<?= e($a['queue_no']) ?></div>
               <div>
@@ -236,9 +333,26 @@ page_header('Queue');
                 <form method="POST">
                   <input type="hidden" name="appt_id" value="<?= e($a['id']) ?>">
                   <button class="qb-btn main" name="action" value="accept">Accept</button>
+                  <button class="qb-btn warn" name="action" value="no_show" onclick="return confirm('Mark this patient as a no-show? This closes the appointment.')">No-show &amp; close</button>
                 </form>
                 <?= rs_form($a) ?>
               </div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+      <?php if ($upcomingActive): ?>
+        <h3 class="qb-group-title">Upcoming accepted queues</h3>
+        <div class="qb-list">
+          <?php foreach ($upcomingActive as $a): ?>
+            <div class="qb-item">
+              <div class="qb-num">#<?= e($a['queue_no']) ?></div>
+              <div>
+                <div class="qb-name"><?= e($a['patient_name']) ?></div>
+                <div class="qb-meta"><?= e($a['service_name']) ?> &middot; <?= date('M j, Y', strtotime($a['appt_date'])) ?> &middot; <?= date('g:i A', strtotime($a['appt_time'])) ?></div>
+              </div>
+              <div class="qb-meta"><?= e(ucfirst(str_replace('_', ' ', $a['status']))) ?></div>
             </div>
           <?php endforeach; ?>
         </div>
@@ -251,7 +365,9 @@ page_header('Queue');
         <div class="qb-empty">Nobody is waiting or in consultation right now.</div>
       <?php else: ?>
         <div class="qb-list">
-          <?php foreach (array_merge($inConsult, $waitingNow) as $a): $isNow = $a['status'] === 'in_consultation'; ?>
+          <?php foreach (array_merge($inConsult, $waitingNow) as $a):
+            $isNow = $a['status'] === 'in_consultation';
+          ?>
             <div class="qb-item <?= $isNow ? 'now' : '' ?>">
               <div class="qb-num">#<?= e($a['queue_no']) ?></div>
               <div>
@@ -266,7 +382,7 @@ page_header('Queue');
                     <button class="qb-btn main" name="action" value="done">Mark done</button>
                   <?php else: ?>
                     <button class="qb-btn main" name="action" value="call">Call patient</button>
-                    <button class="qb-btn warn" name="action" value="no_show">No-show</button>
+                    <button class="qb-btn warn" name="action" value="no_show" onclick="return confirm('Mark this patient as a no-show? This closes the appointment.')">No-show &amp; close</button>
                   <?php endif; ?>
                 </form>
                 <?php if (!$isNow) { echo rs_form($a); } ?>
@@ -279,4 +395,19 @@ page_header('Queue');
   </div>
 <?php endif; ?>
 </div>
+<?php if ($calledPatientModal): ?>
+<div class="queue-modal-backdrop" id="patient-modal" role="dialog" aria-modal="true" aria-labelledby="patient-modal-title">
+  <div class="queue-modal">
+    <h2 id="patient-modal-title">Patient details</h2>
+    <dl class="queue-patient-details">
+      <dt>Name</dt><dd><?= e($calledPatientModal['name']) ?></dd>
+      <dt>Email</dt><dd><?= e($calledPatientModal['email'] ?: 'Not provided') ?></dd>
+      <dt>Mobile number</dt><dd><?= e($calledPatientModal['mobile'] ?: 'Not provided') ?></dd>
+      <dt>Network</dt><dd><?= e($calledPatientModal['mobile_network'] ?: 'Not provided') ?></dd>
+    </dl>
+    <button type="button" class="btn primary" onclick="document.getElementById('patient-modal').remove()">Close</button>
+  </div>
+</div>
+<?php endif; ?>
+<?php if ($center): ?><script>window.setTimeout(function () { window.location.reload(); }, 60000);</script><?php endif; ?>
 <?php page_footer(); ?>

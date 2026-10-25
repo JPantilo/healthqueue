@@ -4,7 +4,7 @@ require_once __DIR__ . '/../includes/init.php';
 require_once __DIR__ . '/../includes/google.php';
 require_once __DIR__ . '/../includes/mailer.php';
 
-$u = require_login();
+$u = require_patient();
 $id = (int)($_GET['id'] ?? 0);
 $pdo = db();
 
@@ -16,14 +16,12 @@ if (!$appt || ($u['role'] === 'patient' && $appt['patient_id'] != $u['id'])) {
     flash('Appointment not found or permission denied.', 'err');
     redirect('index.php');
 }
-
-$isHard = !empty($_GET['hard']) && $u['role'] === 'admin';
-
-if ($isHard) {
-    $pdo->prepare('DELETE FROM appointments WHERE id=?')->execute([$id]);
-} else {
-    $pdo->prepare('UPDATE appointments SET status="cancelled" WHERE id=?')->execute([$id]);
+if (!in_array($appt['status'], ['pending', 'waiting'], true)) {
+    flash('This appointment is already closed and cannot be cancelled again.', 'err');
+    redirect('index.php');
 }
+
+$pdo->prepare('UPDATE appointments SET status="cancelled" WHERE id=?')->execute([$id]);
 
 $pst = $pdo->prepare('SELECT * FROM users WHERE id=?');
 $pst->execute([$appt['patient_id']]);

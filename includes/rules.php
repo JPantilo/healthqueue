@@ -3,7 +3,7 @@
 //  - A patient with an open booking (pending, waiting or in consultation) cannot book again.
 //  - A patient can edit/reschedule only while the booking is still pending.
 //  - A patient can cancel while it is pending or waiting.
-// Workers and admins are not limited here (workers use queue.php).
+// Only patients may use appointment actions; workers and admins use queue.php.
 
 function rules_user(): array {
     $st = db()->prepare('SELECT id, role FROM users WHERE id = ?');

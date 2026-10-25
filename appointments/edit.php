@@ -6,7 +6,7 @@ require_once __DIR__ . '/../includes/google.php';
 require_once __DIR__ . '/../includes/mailer.php';
 require_once __DIR__ . '/../includes/weather.php';
 
-$u = require_login();
+$u = require_patient();
 $id = (int)($_GET['id'] ?? 0);
 $pdo = db();
 
@@ -18,6 +18,10 @@ if (!$appt || ($u['role'] === 'patient' && $appt['patient_id'] != $u['id'])) {
     flash('Appointment not found or permission denied.', 'err');
     redirect('index.php');
 }
+if ($appt['status'] !== 'pending') {
+    flash('Only pending appointments can be rescheduled.', 'err');
+    redirect('index.php');
+}
 
 $centers = $pdo->query('SELECT * FROM centers ORDER BY name')->fetchAll();
 $services = $pdo->query('SELECT * FROM services ORDER BY name')->fetchAll();
@@ -26,6 +30,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     [$data, $err] = validate_appointment($_POST);
     if ($err) {
         flash($err, 'err');
+    } elseif (appointment_slot_taken($data['center_id'], $data['service_id'], $data['appt_date'], $data['appt_time'], $id)) {
+        flash('That department already has a queue within one hour of this time. Choose a time at least one hour apart.', 'err');
     } else {
         $dateChanged = ($data['appt_date'] !== $appt['appt_date'] || $data['center_id'] != $appt['center_id']);
         $qno = $appt['queue_no'];
