@@ -27,6 +27,7 @@ if ($tz = cfg('timezone')) {
 function db()
 {
     static $pdo = null;
+    static $schemaReady = false;
     if ($pdo === null) {
         $c = cfg('db');
         $dsn = "mysql:host={$c['host']};dbname={$c['name']};charset=utf8mb4";
@@ -34,6 +35,21 @@ function db()
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
+    }
+    if (!$schemaReady) {
+        $columns = $pdo->query("SHOW COLUMNS FROM users LIKE 'email_verified_at'")->fetch();
+        if (!$columns) {
+            $pdo->exec('ALTER TABLE users ADD email_verified_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP');
+        }
+        $columns = $pdo->query("SHOW COLUMNS FROM users LIKE 'email_verification_token_hash'")->fetch();
+        if (!$columns) {
+            $pdo->exec('ALTER TABLE users ADD email_verification_token_hash CHAR(64) DEFAULT NULL');
+        }
+        $columns = $pdo->query("SHOW COLUMNS FROM users LIKE 'email_verification_expires_at'")->fetch();
+        if (!$columns) {
+            $pdo->exec('ALTER TABLE users ADD email_verification_expires_at DATETIME DEFAULT NULL');
+        }
+        $schemaReady = true;
     }
     return $pdo;
 }
@@ -58,6 +74,26 @@ function redirect($url)
 {
     header("Location: $url");
     exit;
+}
+
+function app_url($path = '')
+{
+    $base = rtrim((string)cfg('base_url'), '/');
+    $documentRoot = realpath($_SERVER['DOCUMENT_ROOT'] ?? '');
+    $applicationRoot = realpath(__DIR__ . '/..');
+
+    if ($documentRoot && $applicationRoot && strpos($applicationRoot, $documentRoot) === 0) {
+        $relativeRoot = str_replace('\\', '/', substr($applicationRoot, strlen($documentRoot)));
+        $base = rtrim($base, '/');
+        $configuredPath = parse_url($base, PHP_URL_PATH) ?: '';
+        if ($configuredPath !== $relativeRoot) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? parse_url($base, PHP_URL_HOST);
+            $base = $scheme . '://' . $host . rtrim($relativeRoot, '/');
+        }
+    }
+
+    return $base . '/' . ltrim($path, '/');
 }
 
 function current_user()
@@ -88,6 +124,11 @@ function require_login()
         flash('Please sign in first.', 'err');
         redirect(cfg('base_url') . '/index.php');
     }
+    if (empty($u['email_verified_at'])) {
+        unset($_SESSION['uid']);
+        flash('Please verify your email address before accessing appointments.', 'err');
+        redirect(app_url('verify_email.php'));
+    }
     return $u;
 }
 
@@ -100,6 +141,26 @@ function require_role($roles)
         exit('Access denied. Required role: ' . implode(' or ', $roles));
     }
     return $u;
+}
+
+function require_patient()
+{
+    $u = require_login();
+    if ($u['role'] !== 'patient') {
+        flash('Only patients can create or manage appointments.', 'err');
+        redirect(cfg('base_url') . '/index.php');
+    }
+    return $u;
+}
+
+function local_login_url()
+{
+    return cfg('base_url') . '/login.php';
+}
+
+function role_destination($role)
+{
+    return $role === 'admin' ? '/admin/dashboard.php' : ($role === 'worker' ? '/queue.php' : '/appointments/index.php');
 }
 
 function http_request($method, $url, $body = null, array $headers = [])
