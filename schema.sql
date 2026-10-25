@@ -15,13 +15,16 @@ CREATE TABLE IF NOT EXISTS users (
   google_id VARCHAR(64) NOT NULL UNIQUE,
   email VARCHAR(190) NOT NULL UNIQUE,
   name VARCHAR(150) NOT NULL,
+  mobile VARCHAR(20) DEFAULT NULL,
+  mobile_network VARCHAR(30) DEFAULT NULL,
   picture VARCHAR(255) DEFAULT NULL,
+  password_hash VARCHAR(255) DEFAULT NULL,
   role ENUM('patient','worker','admin') NOT NULL DEFAULT 'patient',
   center_id INT DEFAULT NULL,
   google_refresh_token TEXT DEFAULT NULL,
-  email_verified TINYINT(1) NOT NULL DEFAULT 1,
-  verification_token VARCHAR(64) DEFAULT NULL,
-  verification_expires DATETIME DEFAULT NULL,
+  email_verified_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+  email_verification_token_hash CHAR(64) DEFAULT NULL,
+  email_verification_expires_at DATETIME DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (center_id) REFERENCES centers(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS appointments (
   FOREIGN KEY (center_id) REFERENCES centers(id),
   FOREIGN KEY (service_id) REFERENCES services(id),
   INDEX idx_day (center_id, appt_date),
+  INDEX idx_slot (center_id, service_id, appt_date, appt_time, status),
   UNIQUE KEY uq_queue (center_id, appt_date, queue_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
