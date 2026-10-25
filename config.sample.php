@@ -20,6 +20,20 @@ return [
         'from'    => 'HealthQueue <onboarding@resend.dev>',
     ],
 
+    'mailer' => [
+        'driver' => 'resend',
+        'host'   => '127.0.0.1',
+        'port'   => 1025,
+        'from'   => 'HealthQueue <no-reply@localhost>',
+    ],
+
+    'smtp' => [
+        'host'     => 'smtp.gmail.com',
+        'port'     => 587,
+        'username' => 'your-gmail@gmail.com',
+        'password' => 'your-google-app-password',
+    ],
+
     'openweather' => [
         'api_key' => 'YOUR_OPENWEATHER_API_KEY',
     ],

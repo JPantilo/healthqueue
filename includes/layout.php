@@ -17,21 +17,21 @@ function page_header($title, $extraHead = '')
 </head>
 <body>
 <header class="top"><div class="wrap bar">
-  <a class="brand" href="<?= e($base) ?>/index.php">HealthQueue</a>
+  <a class="brand" href="<?= e($base) ?>/index.php"><span class="brand-mark" aria-hidden="true">+</span>HealthQueue</a>
   <nav>
   <?php if ($u): ?>
-    <a href="<?= e($base) ?>/appointments/index.php">Appointments</a>
+    <?php if ($u['role'] === 'patient'): ?><a href="<?= e($base) ?>/appointments/index.php">Appointments</a><?php endif; ?>
     <?php if (in_array($u['role'], ['worker','admin'], true)): ?><a href="<?= e($base) ?>/queue.php">Queue</a><?php endif; ?>
     <?php if ($u['role'] === 'admin'): ?>
       <a href="<?= e($base) ?>/admin/dashboard.php">Dashboard</a>
       <a href="<?= e($base) ?>/admin/users.php">Users</a>
       <a href="<?= e($base) ?>/staff.php">Staff</a>
     <?php endif; ?>
-    <span class="who"><?= e($u['name']) ?> <em><?= e($u['role']) ?></em></span>
+    <span class="who"><span class="who-dot" aria-hidden="true"></span><?= e($u['name']) ?> <em><?= e($u['role']) ?></em></span>
     <a href="<?= e($base) ?>/logout.php">Logout</a>
   <?php else: ?>
     <?php require_once __DIR__ . '/google.php'; ?>
-    <a href="<?= e($base) ?>/login.php">Sign in</a>
+    <a href="<?= e(cfg('base_url')) ?>/login.php">Sign in</a>
     <a class="btn primary" href="<?= e(google_login_url()) ?>">Sign in with Google</a>
   <?php endif; ?>
   </nav>
