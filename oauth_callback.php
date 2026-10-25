@@ -20,21 +20,37 @@ if (empty($info['sub']) || empty($info['email'])) {
 }
 
 $refresh = $tok['json']['refresh_token'] ?? null;
+$intent = $_SESSION['oauth_intent'] ?? 'login';
+unset($_SESSION['oauth_intent']);
 $st = db()->prepare('SELECT * FROM users WHERE google_id = ?');
 $st->execute([$info['sub']]);
 $user = $st->fetch();
 
 if (!$user) {
-    $role = in_array(strtolower($info['email']), array_map('strtolower', cfg('admin_emails')), true) ? 'admin' : 'patient';
-    db()->prepare('INSERT INTO users (google_id,email,name,picture,role,google_refresh_token) VALUES (?,?,?,?,?,?)')
-        ->execute([$info['sub'], $info['email'], $info['name'] ?? $info['email'], $info['picture'] ?? null, $role, $refresh]);
-    $uid = (int)db()->lastInsertId();
+    $byEmail = db()->prepare('SELECT * FROM users WHERE email = ?');
+    $byEmail->execute([$info['email']]);
+    $user = $byEmail->fetch();
+    if ($user) {
+        $uid = (int)$user['id'];
+        $role = $user['role'];
+        db()->prepare('UPDATE users SET google_id=?, name=?, picture=?, google_refresh_token=COALESCE(?, google_refresh_token) WHERE id=?')
+            ->execute([$info['sub'], $info['name'] ?? $user['name'], $info['picture'] ?? null, $refresh, $uid]);
+    } else {
+        $role = in_array(strtolower($info['email']), array_map('strtolower', cfg('admin_emails')), true) ? 'admin' : 'patient';
+        db()->prepare('INSERT INTO users (google_id,email,name,picture,role,google_refresh_token) VALUES (?,?,?,?,?,?)')
+            ->execute([$info['sub'], $info['email'], $info['name'] ?? $info['email'], $info['picture'] ?? null, $role, $refresh]);
+        $uid = (int)db()->lastInsertId();
+    }
 } else {
     $uid = (int)$user['id'];
+    $role = $user['role'];
     db()->prepare('UPDATE users SET name=?, picture=?, google_refresh_token=COALESCE(?, google_refresh_token) WHERE id=?')
         ->execute([$info['name'] ?? $user['name'], $info['picture'] ?? null, $refresh, $uid]);
 }
 
 session_regenerate_id(true);
 $_SESSION['uid'] = $uid;
-redirect(cfg('base_url') . '/appointments/index.php');
+$destination = $intent === 'calendar_sync'
+    ? '/appointments/index.php?calendar=connected'
+    : ($role === 'admin' ? '/admin/dashboard.php' : ($role === 'worker' ? '/queue.php' : '/appointments/index.php'));
+redirect(cfg('base_url') . $destination);

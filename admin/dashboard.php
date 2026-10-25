@@ -16,7 +16,15 @@ $totals = [
 ];
 
 $statuses = $pdo->query('SELECT status, COUNT(*) as cnt FROM appointments GROUP BY status')->fetchAll(PDO::FETCH_KEY_PAIR);
-$centers  = $pdo->query('SELECT c.*, COUNT(a.id) AS appt_count FROM centers c LEFT JOIN appointments a ON c.id=a.center_id GROUP BY c.id ORDER BY appt_count DESC')->fetchAll();
+$centers  = $pdo->query(
+    'SELECT c.*,
+            COUNT(CASE WHEN a.status IN ("pending","waiting","in_consultation") THEN 1 END) AS appt_count,
+            COUNT(CASE WHEN a.appt_date = CURDATE() THEN 1 END) AS today_count,
+            COUNT(CASE WHEN a.appt_date > CURDATE() AND a.status IN ("pending","waiting","in_consultation") THEN 1 END) AS upcoming_count
+     FROM centers c
+     LEFT JOIN appointments a ON c.id=a.center_id
+     GROUP BY c.id ORDER BY c.id ASC'
+)->fetchAll();
 
 // 7-day trend
 $trend = $pdo->query(
@@ -68,7 +76,7 @@ page_header('Admin Dashboard');
 <div class="dash-grid">
   <div class="dash-card accent">
     <div class="dnum"><?= e($totals['today']) ?></div>
-    <div class="dlabel">Appointments Today</div>
+    <div class="dlabel">Total Queue Today</div>
   </div>
   <div class="dash-card">
     <div class="dnum"><?= e($totals['appointments']) ?></div>
@@ -127,19 +135,16 @@ page_header('Admin Dashboard');
   <h2>Load by Health Center</h2>
   <table class="table">
     <thead>
-      <tr><th>Center</th><th>Address</th><th>Total Bookings</th><th>Today</th></tr>
+      <tr><th>Center</th><th>Address</th><th>Active bookings</th><th>Total today</th><th>Upcoming</th></tr>
     </thead>
     <tbody>
-      <?php foreach ($centers as $c):
-        $cToday = $pdo->prepare('SELECT COUNT(*) FROM appointments WHERE center_id=? AND appt_date=CURDATE()');
-        $cToday->execute([$c['id']]);
-        $todayCnt = $cToday->fetchColumn();
-      ?>
+      <?php foreach ($centers as $c): ?>
         <tr>
           <td><b><?= e($c['name']) ?></b></td>
           <td style="color:var(--muted);font-size:.88rem"><?= e($c['address']) ?></td>
           <td><?= e($c['appt_count']) ?></td>
-          <td><span class="badge"><?= e($todayCnt) ?></span></td>
+          <td><span class="badge"><?= e($c['today_count']) ?></span></td>
+          <td><span class="badge"><?= e($c['upcoming_count']) ?></span></td>
         </tr>
       <?php endforeach; ?>
     </tbody>

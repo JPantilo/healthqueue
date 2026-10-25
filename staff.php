@@ -1,12 +1,20 @@
 <?php
 // Admin: set each worker's clinic and departments (services).
-require_once __DIR__ . '/../includes/layout.php';
+require_once __DIR__ . '/includes/layout.php';
 
 require_role(['admin']);
 $pdo = db();
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 
 $centers  = $pdo->query('SELECT id, name FROM centers ORDER BY name')->fetchAll();
 $services = $pdo->query('SELECT id, name FROM services ORDER BY name')->fetchAll();
+
+if ($centers) {
+    $defaultCenterId = (int)$centers[0]['id'];
+    $pdo->prepare('UPDATE users SET center_id = ? WHERE role = "worker" AND center_id IS NULL')
+        ->execute([$defaultCenterId]);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userId   = (int)($_POST['user_id'] ?? 0);
@@ -22,15 +30,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $validCenters  = array_map('intval', array_column($centers, 'id'));
     $validServices = array_map('intval', array_column($services, 'id'));
-    $centerId = in_array($centerId, $validCenters, true) ? $centerId : null;
+    if (!in_array($centerId, $validCenters, true)) {
+        flash('Please select a valid clinic before saving the worker.', 'err');
+        redirect('staff.php');
+    }
     $picked   = array_values(array_intersect($picked, $validServices));
 
-    $pdo->beginTransaction();
-    $pdo->prepare('UPDATE users SET center_id = ? WHERE id = ?')->execute([$centerId, $userId]);
-    $pdo->prepare('DELETE FROM worker_services WHERE user_id = ?')->execute([$userId]);
-    $ins = $pdo->prepare('INSERT INTO worker_services (user_id, service_id) VALUES (?, ?)');
-    foreach ($picked as $sid) { $ins->execute([$userId, $sid]); }
-    $pdo->commit();
+    try {
+        $pdo->beginTransaction();
+        $pdo->prepare('UPDATE users SET center_id = ? WHERE id = ? AND role = "worker"')->execute([$centerId, $userId]);
+        $pdo->prepare('DELETE FROM worker_services WHERE user_id = ?')->execute([$userId]);
+        $ins = $pdo->prepare('INSERT INTO worker_services (user_id, service_id) VALUES (?, ?)');
+        foreach ($picked as $sid) { $ins->execute([$userId, $sid]); }
+        $pdo->commit();
+
+        $saved = $pdo->prepare('SELECT center_id FROM users WHERE id = ? AND role = "worker"');
+        $saved->execute([$userId]);
+        if ((int)$saved->fetchColumn() !== $centerId) {
+            throw new RuntimeException('The worker clinic was not updated.');
+        }
+    } catch (Throwable $ex) {
+        if ($pdo->inTransaction()) { $pdo->rollBack(); }
+        error_log('HealthQueue staff assignment failed: ' . $ex->getMessage());
+        flash('Worker changes could not be saved. Please try again.', 'err');
+        redirect('staff.php');
+    }
 
     flash('Worker updated.', 'ok');
     redirect('staff.php');
@@ -53,7 +77,7 @@ page_header('Staff departments');
     <div class="st-empty">No workers yet. Set a user's role to Worker on the Users page first.</div>
   <?php endif; ?>
 
-  <?php foreach ($workers as $w): $mine = $assigned[(int)$w['id']] ?? []; ?>
+  <?php foreach ($workers as $w): $mine = $assigned[(int)$w['id']] ?? []; $selectedCenter = (int)$w['center_id'] ?: (int)($centers[0]['id'] ?? 0); ?>
     <form method="POST" class="st-card">
       <input type="hidden" name="user_id" value="<?= e($w['id']) ?>">
       <div class="st-head">
@@ -61,10 +85,9 @@ page_header('Staff departments');
           <div class="st-name"><?= e($w['name']) ?></div>
           <div class="st-mail"><?= e($w['email']) ?></div>
         </div>
-        <select name="center_id" aria-label="Clinic for <?= e($w['name']) ?>">
-          <option value="0">No clinic</option>
+        <select name="center_id" aria-label="Clinic for <?= e($w['name']) ?>" required <?= !$centers ? 'disabled' : '' ?>>
           <?php foreach ($centers as $c): ?>
-            <option value="<?= e($c['id']) ?>" <?= (int)$w['center_id'] === (int)$c['id'] ? 'selected' : '' ?>><?= e($c['name']) ?></option>
+            <option value="<?= e($c['id']) ?>" <?= $selectedCenter === (int)$c['id'] ? 'selected' : '' ?>><?= e($c['name']) ?></option>
           <?php endforeach; ?>
         </select>
       </div>

@@ -1,11 +1,18 @@
 <?php
 // READ: patients see their own; workers/admins see all (filterable).
 require_once __DIR__ . '/../includes/layout.php';
+require_once __DIR__ . '/../includes/google.php';
 
-$u = require_login();
+$u = require_patient();
 $pdo = db();
 
-$isStaff = in_array($u['role'], ['worker', 'admin'], true);
+$calendarConnected = !empty($u['google_refresh_token']);
+if (isset($_GET['calendar']) && $_GET['calendar'] === 'connected') {
+    flash('Google Calendar is connected. New and updated appointments can now sync automatically.', 'ok');
+    redirect('index.php');
+}
+
+$isStaff = false;
 $centerFilter = (int)($_GET['center_id'] ?? 0);
 $statusFilter = trim($_GET['status'] ?? '');
 
@@ -35,20 +42,67 @@ if (!$isStaff) {
 if (!empty($where)) {
     $sql .= ' WHERE ' . implode(' AND ', $where);
 }
-$sql .= ' ORDER BY a.appt_date DESC, a.appt_time DESC';
+$sql .= $isStaff
+    ? ' ORDER BY a.appt_date DESC, a.appt_time DESC, a.queue_no ASC'
+    : ' ORDER BY a.appt_date ASC, a.appt_time ASC, a.queue_no ASC';
 
 $st = $pdo->prepare($sql);
 $st->execute($params);
 $appts = $st->fetchAll();
 
 $centers = $isStaff ? $pdo->query('SELECT * FROM centers ORDER BY name')->fetchAll() : [];
+$activeCount = 0;
+$nextAppointment = null;
+if (!$isStaff) {
+    foreach ($appts as &$appointment) {
+        if (in_array($appointment['status'], ['pending', 'waiting', 'in_consultation'], true)) {
+            $activeCount++;
+        }
+        if (in_array($appointment['status'], ['pending', 'waiting', 'in_consultation'], true)) {
+            $ahead = $pdo->prepare('SELECT COUNT(*) FROM appointments
+                WHERE center_id = ? AND service_id = ? AND appt_date = ? AND queue_no < ?
+                AND status IN ("pending", "waiting", "in_consultation")');
+            $ahead->execute([$appointment['center_id'], $appointment['service_id'], $appointment['appt_date'], $appointment['queue_no']]);
+            $appointment['ahead_count'] = (int)$ahead->fetchColumn();
+            if ($nextAppointment === null ||
+                $appointment['appt_date'] < $nextAppointment['appt_date'] ||
+                ($appointment['appt_date'] === $nextAppointment['appt_date'] && $appointment['queue_no'] < $nextAppointment['queue_no'])) {
+                $nextAppointment = $appointment;
+            }
+        }
+    }
+    unset($appointment);
+}
 
 page_header('My Appointments');
 ?>
 <div class="bar mb-3">
-  <h2><?= $isStaff ? 'Clinic Appointments' : 'My Appointments' ?></h2>
-  <a href="create.php" class="btn primary">+ Book New Appointment</a>
+  <div>
+    <h2><?= $isStaff ? 'Clinic Appointments' : 'My Appointments' ?></h2>
+    <p class="text-muted"><?= $isStaff ? 'Review bookings across your clinics.' : 'Track your bookings and queue progress in one place.' ?></p>
+  </div>
+  <?php if (!$isStaff): ?>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
+      <?php if ($calendarConnected): ?>
+        <span class="badge">Google Calendar connected</span>
+      <?php else: ?>
+        <a href="<?= e(google_calendar_url()) ?>" class="btn secondary">Sync Google Calendar</a>
+      <?php endif; ?>
+      <a href="create.php" class="btn primary">Book New Appointment</a>
+    </div>
+  <?php else: ?>
+    <a href="create.php" class="btn primary">Book New Appointment</a>
+  <?php endif; ?>
 </div>
+
+<?php if (!$isStaff): ?>
+  <div class="appt-overview mb-3">
+    <div class="overview-card"><span class="overview-icon">◷</span><div><strong><?= $activeCount ?></strong><span>Active bookings</span></div></div>
+    <div class="overview-card"><span class="overview-icon">#</span><div><strong><?= $nextAppointment ? '#' . e($nextAppointment['queue_no']) : '—' ?></strong><span><?= $nextAppointment && $nextAppointment['appt_date'] === date('Y-m-d') ? "Today's queue number" : 'Next queue number' ?></span></div></div>
+    <div class="overview-card"><span class="overview-icon">✓</span><div><strong><?= $nextAppointment ? e($nextAppointment['ahead_count']) : '—' ?></strong><span><?= $nextAppointment && $nextAppointment['appt_date'] === date('Y-m-d') ? 'People ahead today' : 'People ahead on queue date' ?></span></div></div>
+    <?php if ($nextAppointment): ?><button type="button" class="btn secondary sm overview-refresh" onclick="window.location.reload()">Refresh queue</button><?php endif; ?>
+  </div>
+<?php endif; ?>
 
 <?php if ($isStaff): ?>
   <form method="GET" class="filter-bar card mb-3">
@@ -113,9 +167,14 @@ page_header('My Appointments');
             <?= date('M j, Y', strtotime($a['appt_date'])) ?><br>
             <small class="text-muted"><?= date('g:i A', strtotime($a['appt_time'])) ?></small>
           </td>
-          <td><span class="tag tag-<?= e($a['status']) ?>"><?= e(str_replace('_', ' ', $a['status'])) ?></span></td>
           <td>
-            <?php if ($a['status'] !== 'cancelled' && $a['status'] !== 'done'): ?>
+            <span class="tag tag-<?= e($a['status']) ?>"><?= e(str_replace('_', ' ', $a['status'])) ?></span>
+            <?php if (!$isStaff && isset($a['ahead_count'])): ?>
+              <small class="queue-hint"><?= e($a['ahead_count']) ?> ahead</small>
+            <?php endif; ?>
+          </td>
+          <td>
+            <?php if (in_array($a['status'], ['pending', 'waiting'], true)): ?>
               <a href="edit.php?id=<?= e($a['id']) ?>" class="btn sm secondary">Reschedule</a>
               <a href="delete.php?id=<?= e($a['id']) ?>" class="btn sm danger" onclick="return confirm('Cancel this appointment?')">Cancel</a>
             <?php else: ?>
@@ -127,4 +186,5 @@ page_header('My Appointments');
     </tbody>
   </table>
 <?php endif; ?>
+<?php if (!$isStaff && $nextAppointment): ?><script>window.setTimeout(function () { window.location.reload(); }, 30000);</script><?php endif; ?>
 <?php page_footer(); ?>

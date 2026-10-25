@@ -1,5 +1,5 @@
 <?php
-// Admin: change user roles (patient / worker / admin).
+// Admin: change roles and delete users.
 require_once __DIR__ . '/../includes/layout.php';
 
 $me = require_role('admin');
@@ -7,8 +7,20 @@ $pdo = db();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userId = (int)($_POST['user_id'] ?? 0);
+    $action = $_POST['action'] ?? 'role';
     $newRole = $_POST['role'] ?? '';
-    if ($userId && in_array($newRole, ['patient', 'worker', 'admin'], true)) {
+    if ($action === 'delete' && $userId) {
+        if ($userId === (int)$me['id']) {
+            flash('You cannot delete your own admin account.', 'err');
+        } else {
+            $delete = $pdo->prepare('DELETE FROM users WHERE id=?');
+            $delete->execute([$userId]);
+            flash($delete->rowCount() ? 'User deleted.' : 'User could not be found.', $delete->rowCount() ? 'ok' : 'err');
+        }
+        redirect('users.php');
+    }
+
+    if ($action === 'role' && $userId && in_array($newRole, ['patient', 'worker', 'admin'], true)) {
         if ($userId === (int)$me['id'] && $newRole !== 'admin') {
             flash('You cannot demote your own account from admin.', 'err');
         } else {
@@ -46,15 +58,25 @@ page_header('User Role Management');
         <td><span class="tag tag-<?= e($u['role']) ?>"><?= e($u['role']) ?></span></td>
         <td><?= date('M j, Y', strtotime($u['created_at'])) ?></td>
         <td>
+          <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
           <form method="POST" style="display:inline-flex;gap:0.4rem;">
-            <input type="hidden" name="user_id" value="<?= e($u['id']) ?>">
-            <select name="role">
+          <input type="hidden" name="user_id" value="<?= e($u['id']) ?>">
+          <input type="hidden" name="action" value="role">
+          <select name="role">
               <option value="patient" <?= $u['role'] === 'patient' ? 'selected' : '' ?>>Patient</option>
               <option value="worker" <?= $u['role'] === 'worker' ? 'selected' : '' ?>>Worker</option>
               <option value="admin" <?= $u['role'] === 'admin' ? 'selected' : '' ?>>Admin</option>
             </select>
             <button type="submit" class="btn sm secondary">Save</button>
-          </form>
+            </form>
+            <?php if ($u['id'] != $me['id']): ?>
+              <form method="POST" style="display:inline;">
+                <input type="hidden" name="user_id" value="<?= e($u['id']) ?>">
+                <input type="hidden" name="action" value="delete">
+                <button type="submit" class="btn sm danger" onclick="return confirm('Delete this user and all of their appointments? This cannot be undone.')">Delete</button>
+              </form>
+            <?php endif; ?>
+          </div>
         </td>
       </tr>
     <?php endforeach; ?>
